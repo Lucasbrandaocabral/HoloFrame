@@ -29,10 +29,11 @@ Mova as mãos. A moldura segue.
 |---|--------|-----------|
 | `1` | **Trilha de Luz** | Rastro neon cyan/magenta seguindo as pontas dos dedos |
 | `2` | **Glitch** | Distorção de canal RGB quando a moldura se move rápido |
-| `3` | **Screenshot** | Captura automática após 2 s de moldura estável |
+| `3` | **Captura de Rosto** | Detecta e enquadra o rosto ao vivo dentro da moldura |
 | `4` | **Espelho / Tela** | Exibe webcam ou região da tela dentro da moldura |
 | `5` | **Filtro de Cor** | Cicla entre Normal → Neon → P&B → Sépia → Infravermelho |
-| `6` | **Explosão** | Punho fechado dentro da moldura dispara 160 partículas |
+| `6` | **Clone Fantasma** | Palma aberta 1 s congela o frame — veja dois de você ao mesmo tempo |
+| `7` | **Desenho no Ar** | Indicador esticado desenha neon; paz ✌ troca cor; C limpa |
 
 ---
 

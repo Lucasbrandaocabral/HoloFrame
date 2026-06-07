@@ -39,8 +39,8 @@ import cv2
 import numpy as np
 
 from effects import (
-    ColorFilter, ExplosionEffect, GlitchEffect,
-    LightTrail, MirrorMode, ScreenshotCapture,
+    AirDraw, ColorFilter, FaceCapture, GhostClone, GlitchEffect,
+    LightTrail, MirrorMode,
 )
 from gesture_detector import GestureDetector
 from hand_tracker import HandTracker
@@ -67,42 +67,14 @@ def _draw_top_hud(frame: np.ndarray, fps: float, hand_count: int, frame_active: 
     h, w = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Barra superior
-    cv2.rectangle(frame, (0, 0), (w, 38), (0, 12, 22), -1)
-    cv2.line(frame, (0, 38), (w, 38), (0, 90, 140), 1)
+    # FPS — canto superior direito, sem fundo
+    fps_col = (0, 220, 100) if fps >= 28 else (0, 160, 255) if fps >= 15 else (0, 60, 200)
+    cv2.putText(frame, f"{fps:.0f}", (w - 34, 20), font, 0.45, fps_col, 1, cv2.LINE_AA)
 
-    cv2.putText(frame, "HOLO FRAME", (12, 26), font, 0.68, (0, 210, 255), 1, cv2.LINE_AA)
-
-    # FPS
-    fps_col = (0, 255, 100) if fps >= 28 else (0, 180, 255) if fps >= 15 else (0, 80, 255)
-    cv2.putText(frame, f"FPS {fps:4.1f}", (w - 130, 26), font, 0.58, fps_col, 1, cv2.LINE_AA)
-
-    # Ícones de mãos
+    # Dois pontos indicando mãos detectadas
     for i in range(2):
-        col = (0, 255, 150) if i < hand_count else (0, 45, 70)
-        cx = w // 2 - 18 + i * 36
-        cv2.circle(frame, (cx, 20), 8, col, -1)
-        cv2.circle(frame, (cx, 20), 9, (0, 190, 255), 1, cv2.LINE_AA)
-
-    # Status na barra inferior
-    if frame_active:
-        status, col = "FRAME LOCKED",      (0, 255, 150)
-    elif hand_count == 2:
-        status, col = "ALINHANDO...",       (0, 200, 255)
-    elif hand_count == 1:
-        status, col = "UMA MÃO DETECTADA", (0, 150, 255)
-    else:
-        status, col = "MOSTRE AMBAS AS MÃOS", (55, 75, 110)
-
-    cv2.putText(frame, status, (12, h - 12), font, 0.52, col, 1, cv2.LINE_AA)
-
-    # Dica de gesto
-    cv2.putText(frame, "Polegar + indicador = cantos da moldura",
-                (12, h - 30), font, 0.36, (38, 68, 90), 1, cv2.LINE_AA)
-
-    # Linha de scan de fundo
-    scan_y = int((time.time() * 55) % h)
-    frame[scan_y] = np.clip(frame[scan_y].astype(np.int32) + 16, 0, 255)
+        col = (0, 200, 100) if i < hand_count else (0, 28, 45)
+        cv2.circle(frame, (w - 52 - i * 12, 12), 3, col, -1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -159,19 +131,21 @@ def main():
     # ── Efeitos ───────────────────────────────────────────────────────────
     trail      = LightTrail()
     glitch     = GlitchEffect()
-    screenshot = ScreenshotCapture()
+    face_cap   = FaceCapture()
     mirror     = MirrorMode()
     color_filt = ColorFilter()
-    explosion  = ExplosionEffect()
+    ghost      = GhostClone()
+    air_draw   = AirDraw()
 
     # ── Painel UI ─────────────────────────────────────────────────────────
     panel = EffectsPanel([
-        ("1", "TRILHA DE LUZ",   trail,      "enabled"),
-        ("2", "GLITCH",          glitch,     "enabled"),
-        ("3", "SCREENSHOT",      screenshot, "enabled"),
-        ("4", "ESPELHO",         mirror,     "enabled"),
-        ("5", "FILTRO DE COR",   color_filt, "enabled"),
-        ("6", "EXPLOSÃO",        explosion,  "enabled"),
+        ("1", "TRILHA DE LUZ",    trail,      "enabled"),
+        ("2", "GLITCH",           glitch,     "enabled"),
+        ("3", "CAPTURA DE ROSTO", face_cap,   "enabled"),
+        ("4", "ESPELHO",          mirror,     "enabled"),
+        ("5", "FILTRO DE COR",    color_filt, "enabled"),
+        ("6", "CLONE FANTASMA",   ghost,      "enabled"),
+        ("7", "DESENHO NO AR",    air_draw,   "enabled"),
     ])
 
     # ── Câmera virtual (opcional) ─────────────────────────────────────────
@@ -199,6 +173,7 @@ def main():
             continue
 
         frame = cv2.flip(frame, 1)
+        raw   = frame.copy()   # frame limpo para detecção de rosto
 
         # ── MediaPipe (a cada N frames) ───────────────────────────────────
         if frame_idx % MEDIAPIPE_EVERY_N == 0:
@@ -216,14 +191,19 @@ def main():
         # ── Atualiza efeitos ──────────────────────────────────────────────
         trail.update(hands)
         glitch.update(corners)
-        explosion.update(hands, corners)
 
         # ── Trilha de luz ─────────────────────────────────────────────────
         if trail.enabled:
             trail.draw(frame)
 
+        # ── Captura de rosto ──────────────────────────────────────────────
+        face_cap.update(raw)
+
         # ── Configura renderer para este frame ────────────────────────────
-        renderer.source_frame  = mirror.get_frame(prev_frame)
+        if face_cap.enabled:
+            renderer.source_frame = face_cap.get_frame()
+        else:
+            renderer.source_frame = mirror.get_frame(prev_frame)
         renderer.zoom_factor   = zoom_level
         renderer.glitch_active = glitch.is_active
         renderer.color_filter  = color_filt if color_filt.enabled else None
@@ -235,14 +215,17 @@ def main():
         # ── Renderiza imagem holográfica ──────────────────────────────────
         frame = renderer.render(frame, corners)
 
-        # ── Screenshot ────────────────────────────────────────────────────
-        if screenshot.enabled:
-            screenshot.update(frame, corners)
-            screenshot.draw(frame, corners)
+        # ── Clone Fantasma ────────────────────────────────────────────────
+        ghost.update(hands, frame)
+        frame = ghost.apply(frame)
+        ghost.draw_indicator(frame, hands)
 
-        # ── Explosão ──────────────────────────────────────────────────────
-        if explosion.enabled:
-            explosion.draw(frame)
+        # ── Desenho no Ar ─────────────────────────────────────────────────
+        air_draw.update(hands, frame.shape)
+        air_draw.draw(frame)
+
+        # ── Captura de rosto — indicador ──────────────────────────────────
+        face_cap.draw(frame)
 
         # ── Salva frame para webcam mirror do próximo ciclo ──────────────
         if mirror.enabled and not mirror.screen_mode:
@@ -297,6 +280,8 @@ def main():
             mirror.select_region()
         elif key == ord("l"):
             show_landmarks = not show_landmarks
+        elif key == ord("c"):
+            air_draw.clear()
         elif key == 9:          # TAB
             panel.toggle()
         elif key == ord("+") or key == ord("="):

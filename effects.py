@@ -5,6 +5,7 @@ Cada efeito tem um atributo `enabled` (bool) que o painel liga/desliga.
 """
 
 import collections
+import math
 import os
 import time
 
@@ -96,7 +97,106 @@ def apply_glitch(img: np.ndarray) -> np.ndarray:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  3. SCREENSHOT — captura automática depois de 2 s de moldura estável
+#  3. CAPTURA DE ROSTO — detecta e enquadra o rosto na moldura
+# ══════════════════════════════════════════════════════════════════════════════
+
+class FaceCapture:
+    PAD     = 0.45
+    EVERY_N = 2   # detecta a cada 2 frames
+
+    def __init__(self):
+        self.enabled   = False
+        self._face_img = None
+        self._detector = None
+        self._counter  = 0
+        self._last_box = None
+        self._init_detector()
+
+    def _init_detector(self):
+        xml = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+        c = cv2.CascadeClassifier(xml)
+        if not c.empty():
+            self._detector = c
+            print("FaceCapture: cascade carregado →", xml)
+        else:
+            print("AVISO: cascade não encontrado →", xml)
+
+    @property
+    def name(self) -> str:
+        return "LUFFY" if self._face_img is not None else ""
+
+    def update(self, frame: np.ndarray):
+        if not self.enabled or self._detector is None:
+            return
+        self._counter += 1
+        if self._counter % self.EVERY_N != 0:
+            if self._last_box is not None:
+                self._crop(frame, *self._last_box)
+            return
+
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cv2.equalizeHist(gray, gray)   # melhora contraste para detectar melhor
+        faces = self._detector.detectMultiScale(
+            gray, scaleFactor=1.05, minNeighbors=3, minSize=(40, 40))
+
+        if len(faces) == 0:
+            return
+
+        x, y, bw, bh = max(faces, key=lambda f: f[2] * f[3])
+        self._last_box = (x, y, bw, bh)
+        self._crop(frame, x, y, bw, bh)
+
+    def _crop(self, frame: np.ndarray, x: int, y: int, w: int, h: int):
+        fh, fw = frame.shape[:2]
+        pad = int(max(w, h) * self.PAD)
+        x1 = max(0, x - pad)
+        y1 = max(0, y - int(pad * 1.4))
+        x2 = min(fw, x + w + pad)
+        y2 = min(fh, y + h + pad)
+        crop = frame[y1:y2, x1:x2]
+        if crop.size > 0:
+            self._face_img = crop.copy()
+
+    def get_frame(self) -> "np.ndarray | None":
+        if not self.enabled or self._face_img is None:
+            return None
+        return self._luffy_stretch(self._face_img)
+
+    def _luffy_stretch(self, img: np.ndarray) -> np.ndarray:
+        h, w  = img.shape[:2]
+        phase = math.sin(time.time() * 2.8)
+
+        sx = 1.0 + phase * 0.55   # stretch horizontal (0.45→1.55)
+        sy = 1.0 - phase * 0.30   # squish vertical inverso
+
+        cx, cy = w / 2.0, h / 2.0
+        dx = np.tile(np.arange(w, dtype=np.float32), (h, 1))
+        dy = np.tile(np.arange(h, dtype=np.float32).reshape(-1, 1), (1, w))
+
+        map_x = np.clip(cx + (dx - cx) / max(sx, 0.05), 0, w - 1).astype(np.float32)
+        map_y = np.clip(cy + (dy - cy) / max(sy, 0.05), 0, h - 1).astype(np.float32)
+
+        return cv2.remap(img, map_x, map_y, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_REPLICATE)
+
+    def draw(self, frame: np.ndarray):
+        if not self.enabled:
+            return
+        h_fr = frame.shape[0]
+        col   = (0, 255, 200) if self._face_img is not None else (0, 80, 160)
+        label = "LUFFY ativo" if self._face_img is not None else "procurando rosto..."
+        cv2.circle(frame, (18, h_fr - 44), 5, col, -1)
+        cv2.putText(frame, label, (30, h_fr - 39),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
+
+        # debug: retângulo do rosto detectado
+        if self._last_box is not None:
+            x, y, w, h = self._last_box
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 180), 2, cv2.LINE_AA)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  3b. SCREENSHOT — captura automática depois de 2 s de moldura estável
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ScreenshotCapture:
@@ -366,6 +466,182 @@ class ColorFilter:
 # ══════════════════════════════════════════════════════════════════════════════
 #  6. EXPLOSÃO — punho fechado dispara burst de partículas
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  8. DESENHO NO AR — indicador esticado desenha neon; paz ✌ troca cor; C limpa
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AirDraw:
+    COLORS = [
+        (0,   255, 255),   # cyan
+        (255,  80, 255),   # magenta
+        (80,  255, 100),   # verde
+        (255, 160,   0),   # laranja
+        (130, 100, 255),   # azul
+        (255, 255,  80),   # amarelo
+    ]
+    COLOR_NAMES = ["CYAN", "MAGENTA", "VERDE", "LARANJA", "AZUL", "AMARELO"]
+
+    def __init__(self):
+        self.enabled       = False
+        self._canvas       = None   # camada de desenho persistente
+        self._prev_pt      = None
+        self._color_idx    = 0
+        self._size         = 3
+        self._peace_locked = False  # evita trocar cor em todo frame do gesto
+
+    @property
+    def color(self):
+        return self.COLORS[self._color_idx]
+
+    @property
+    def name(self) -> str:
+        return self.COLOR_NAMES[self._color_idx]
+
+    def clear(self):
+        if self._canvas is not None:
+            self._canvas[:] = 0
+
+    # ------------------------------------------------------------------ gestos
+
+    @staticmethod
+    def _gesture(hand) -> str:
+        """'draw' | 'color' | 'none'"""
+        lm       = hand["landmarks"]
+        idx_up   = lm[8][1]  < lm[6][1]    # indicador esticado
+        mid_up   = lm[12][1] < lm[10][1]   # médio esticado
+        ring_dn  = lm[16][1] > lm[14][1]   # anelar dobrado
+        pinky_dn = lm[20][1] > lm[18][1]   # mindinho dobrado
+        if idx_up and not mid_up and ring_dn and pinky_dn:
+            return "draw"
+        if idx_up and mid_up and ring_dn and pinky_dn:
+            return "color"
+        return "none"
+
+    # ------------------------------------------------------------------ update / draw
+
+    def update(self, hands, frame_shape):
+        if not self.enabled:
+            self._prev_pt = None
+            return
+
+        h, w = frame_shape[:2]
+        if self._canvas is None or self._canvas.shape[:2] != (h, w):
+            self._canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+        gesture = "none"
+        tip_pt  = None
+        for hand in hands:
+            g = self._gesture(hand)
+            if g != "none":
+                gesture, tip_pt = g, hand["landmarks"][8]
+                break
+
+        # troca de cor — bloqueado até soltar o gesto
+        if gesture == "color" and not self._peace_locked:
+            self._color_idx    = (self._color_idx + 1) % len(self.COLORS)
+            self._peace_locked = True
+        elif gesture != "color":
+            self._peace_locked = False
+
+        # desenho
+        if gesture == "draw" and tip_pt is not None:
+            if self._prev_pt is not None:
+                glow = tuple(c // 4 for c in self.color)
+                cv2.line(self._canvas, self._prev_pt, tip_pt,
+                         glow, self._size * 5, cv2.LINE_AA)
+                cv2.line(self._canvas, self._prev_pt, tip_pt,
+                         self.color, self._size, cv2.LINE_AA)
+            cv2.circle(self._canvas, tip_pt, self._size + 2, self.color, -1)
+            self._prev_pt = tip_pt
+        else:
+            self._prev_pt = None
+
+    def draw(self, frame: np.ndarray):
+        if not self.enabled:
+            return
+        if self._canvas is not None:
+            cv2.add(frame, self._canvas, dst=frame)   # adição saturada = glow neon
+
+        # indicador de cor no canto inferior esquerdo
+        h = frame.shape[0]
+        cv2.circle(frame, (18, h - 20), 7, self.color, -1)
+        cv2.circle(frame, (18, h - 20), 9, self.color, 1, cv2.LINE_AA)
+        cv2.putText(frame, "paz=cor   C=limpar",
+                    (32, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36, (70, 110, 130), 1, cv2.LINE_AA)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  7. CLONE FANTASMA — palma aberta por 1 s congela o frame; sai do lugar e
+#     você vê dois de si mesmo na tela (dupla exposição)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GhostClone:
+    HOLD = 0.9   # segundos de palma aberta para disparar
+
+    def __init__(self):
+        self.enabled  = False
+        self.frozen   = None    # frame congelado
+        self._palm_t  = None    # quando a palma foi detectada
+        self._locked  = False   # evita re-trigger enquanto palma continua aberta
+
+    @property
+    def name(self) -> str:
+        return "CONGELADO" if self.frozen is not None else ""
+
+    # ------------------------------------------------------------------ detecção
+
+    @staticmethod
+    def _is_open_palm(hand) -> bool:
+        lm    = hand["landmarks"]
+        wrist = np.array(lm[0])
+        scale = np.linalg.norm(np.array(lm[9]) - wrist)
+        if scale < 1:
+            return False
+        thresh = scale * 1.45
+        return all(
+            np.linalg.norm(np.array(lm[t]) - wrist) > thresh
+            for t in (4, 8, 12, 16, 20)
+        )
+
+    # ------------------------------------------------------------------ update / apply
+
+    def update(self, hands, frame: np.ndarray):
+        if not self.enabled:
+            return
+        is_palm = any(self._is_open_palm(h) for h in hands)
+
+        if is_palm and not self._locked:
+            if self._palm_t is None:
+                self._palm_t = time.time()
+            elif time.time() - self._palm_t >= self.HOLD:
+                self.frozen  = None if self.frozen is not None else frame.copy()
+                self._locked = True   # precisa tirar a mão para disparar de novo
+        elif not is_palm:
+            self._palm_t = None
+            self._locked = False
+
+    def apply(self, frame: np.ndarray) -> np.ndarray:
+        """Dupla exposição: congelado 60% + ao vivo 60% → ambos visíveis."""
+        if not self.enabled or self.frozen is None:
+            return frame
+        if self.frozen.shape != frame.shape:
+            return frame
+        return cv2.addWeighted(self.frozen, 0.60, frame, 0.60, 0)
+
+    def draw_indicator(self, frame: np.ndarray, hands):
+        """Anel de progresso sobre a palma enquanto aguarda o disparo."""
+        if not self.enabled or self._palm_t is None or self._locked:
+            return
+        p = min(1.0, (time.time() - self._palm_t) / self.HOLD)
+        for hand in hands:
+            if self._is_open_palm(hand):
+                cx, cy = hand["landmarks"][9]
+                label  = "LIBERA" if self.frozen is not None else "CONGELA"
+                cv2.ellipse(frame, (cx, cy), (32, 32), -90,
+                            0, int(p * 360), (0, 255, 200), 3, cv2.LINE_AA)
+                cv2.putText(frame, label, (cx - 32, cy - 42),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 200), 1, cv2.LINE_AA)
 
 class ExplosionEffect:
     def __init__(self):

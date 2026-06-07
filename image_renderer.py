@@ -75,9 +75,7 @@ class ImageRenderer:
 
         self._scan = (self._scan + self.SCAN_SPEED) % 1.0
 
-        if corners is not None and self._alpha > 0.15:
-            self._emit(corners)
-        self._age_particles()
+        self._particles.clear()
 
     # ------------------------------------------------------------------ warp
 
@@ -106,7 +104,6 @@ class ImageRenderer:
         warped = cv2.warpPerspective(src_img, M, (w, h))
 
         # Efeitos pós-warp
-        self._scanline(warped)
         if self.glitch_active:
             from effects import apply_glitch
             warped = apply_glitch(warped)
@@ -158,48 +155,7 @@ class ImageRenderer:
     # ------------------------------------------------------------------ HUD (1 overlay total)
 
     def _draw_hud(self, frame: np.ndarray, pts: np.ndarray):
-        h, w  = frame.shape[:2]
-        ipts  = pts.astype(np.int32)
-        a     = self._alpha
-        t     = time.time() - self._t0
-
-        # ── Tudo translúcido num único overlay ────────────────────────────
-        if self._ov is None or self._ov.shape != frame.shape:
-            self._ov = np.empty_like(frame)
-        np.copyto(self._ov, frame)
-
-        # Glow da borda (2 passagens no mesmo canvas)
-        cv2.polylines(self._ov, [ipts], True, (0,  75, 200), 14, cv2.LINE_AA)
-        cv2.polylines(self._ov, [ipts], True, (0, 155, 255),  6, cv2.LINE_AA)
-
-        # Grade interna
-        if a > 0.22:
-            self._draw_grid_on(self._ov, pts)
-
-        # Dot scanner
-        sp = self._scanner_pos(pts)
-        if sp:
-            cv2.circle(self._ov, sp, 18, (0, 255, 255), -1)
-
-        # Glow das partículas
-        for p in self._particles:
-            x, y = int(p["x"]), int(p["y"])
-            if 0 <= x < w and 0 <= y < h:
-                cv2.circle(self._ov, (x, y), p["size"] + 2, p["color"], -1)
-
-        # UM único blend
-        cv2.addWeighted(self._ov, a * 0.28, frame, 1.0 - a * 0.28, 0, frame)
-
-        # ── Elementos nítidos diretamente no frame ────────────────────────
-        cv2.polylines(frame, [ipts], True, (0, 255, 255), 2, cv2.LINE_AA)
-        self._draw_corners(frame, ipts, t)
-        if sp:
-            cv2.circle(frame, sp, 5, (255, 255, 255), -1)
-        self._draw_readout(frame, ipts, t)
-        for p in self._particles:
-            x, y = int(p["x"]), int(p["y"])
-            if 0 <= x < w and 0 <= y < h:
-                cv2.circle(frame, (x, y), max(1, p["size"] - 1), (240, 240, 255), -1)
+        pass   # modo limpo: sem bordas, brilhos ou decorações
 
     def _draw_corners(self, frame, pts, t):
         pulse   = int(math.sin(t * 2.5) * 3)
