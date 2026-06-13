@@ -22,11 +22,12 @@ HoloFrame — Rastreamento holográfico de mãos em tempo real.
   TECLAS DE EFEITO (ver painel in-app):
   1      Trilha de Luz
   2      Glitch
-  3      Screenshot automático (segure 2 s parado)
+  3      Rosto Elástico — faça pinça sobre o rosto e puxe (Gomu Gomu)
   4      Espelho — webcam dentro da moldura
   S      Selecionar região da tela para usar na moldura
-  5      Filtro de Cor (cicla entre modos)
-  6      Explosão — feche o punho dentro da moldura
+  5      Tela Virtual — janela do Windows flutuando (N cria, X remove)
+  6      Clone Fantasma — palma aberta 1 s congela
+  7      Desenho no Ar — indicador desenha; paz troca cor; C limpa
 ═══════════════════════════════════════════════════
 """
 
@@ -39,9 +40,10 @@ import cv2
 import numpy as np
 
 from effects import (
-    AirDraw, ColorFilter, FaceCapture, GhostClone, GlitchEffect,
-    LightTrail, MirrorMode,
+    AirDraw, FaceWarp, GhostClone, GlitchEffect,
+    LightTrail, MirrorMode, VirtualScreens,
 )
+from face_tracker import FaceTracker
 from gesture_detector import GestureDetector
 from hand_tracker import HandTracker
 from image_renderer import ImageRenderer
@@ -124,16 +126,17 @@ def main():
     cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # ── Módulos principais ────────────────────────────────────────────────
-    tracker  = HandTracker()
-    detector = GestureDetector()
-    renderer = ImageRenderer(DEFAULT_IMAGE if os.path.exists(DEFAULT_IMAGE) else None)
+    tracker      = HandTracker()
+    face_tracker = FaceTracker()
+    detector     = GestureDetector()
+    renderer     = ImageRenderer(DEFAULT_IMAGE if os.path.exists(DEFAULT_IMAGE) else None)
 
     # ── Efeitos ───────────────────────────────────────────────────────────
     trail      = LightTrail()
     glitch     = GlitchEffect()
-    face_cap   = FaceCapture()
+    face_warp  = FaceWarp()
     mirror     = MirrorMode()
-    color_filt = ColorFilter()
+    vscreens   = VirtualScreens()
     ghost      = GhostClone()
     air_draw   = AirDraw()
 
@@ -141,9 +144,9 @@ def main():
     panel = EffectsPanel([
         ("1", "TRILHA DE LUZ",    trail,      "enabled"),
         ("2", "GLITCH",           glitch,     "enabled"),
-        ("3", "CAPTURA DE ROSTO", face_cap,   "enabled"),
+        ("3", "ROSTO ELASTICO",   face_warp,  "enabled"),
         ("4", "ESPELHO",          mirror,     "enabled"),
-        ("5", "FILTRO DE COR",    color_filt, "enabled"),
+        ("5", "TELA VIRTUAL",     vscreens,   "enabled"),
         ("6", "CLONE FANTASMA",   ghost,      "enabled"),
         ("7", "DESENHO NO AR",    air_draw,   "enabled"),
     ])
@@ -181,6 +184,9 @@ def main():
             hands   = tracker.get_hands(frame)
             corners = detector.detect(hands)
             renderer.set_active(corners is not None)
+            if face_warp.enabled:
+                face_tracker.process(raw)
+                face_warp.set_face(face_tracker.get_face(raw))
 
         frame_idx += 1
 
@@ -196,17 +202,14 @@ def main():
         if trail.enabled:
             trail.draw(frame)
 
-        # ── Captura de rosto ──────────────────────────────────────────────
-        face_cap.update(raw)
+        # ── Rosto elástico — agarra e puxa o rosto ao vivo ────────────────
+        face_warp.update(hands)
+        frame = face_warp.apply(frame)
 
         # ── Configura renderer para este frame ────────────────────────────
-        if face_cap.enabled:
-            renderer.source_frame = face_cap.get_frame()
-        else:
-            renderer.source_frame = mirror.get_frame(prev_frame)
+        renderer.source_frame  = mirror.get_frame(prev_frame)
         renderer.zoom_factor   = zoom_level
         renderer.glitch_active = glitch.is_active
-        renderer.color_filter  = color_filt if color_filt.enabled else None
 
         # ── Landmarks ─────────────────────────────────────────────────────
         if show_landmarks:
@@ -224,8 +227,12 @@ def main():
         air_draw.update(hands, frame.shape)
         air_draw.draw(frame)
 
-        # ── Captura de rosto — indicador ──────────────────────────────────
-        face_cap.draw(frame)
+        # ── Telas virtuais flutuantes ─────────────────────────────────────
+        vscreens.update(hands, frame.shape)
+        vscreens.draw(frame)
+
+        # ── Rosto elástico — malha / leque de tensão ──────────────────────
+        face_warp.draw(frame)
 
         # ── Salva frame para webcam mirror do próximo ciclo ──────────────
         if mirror.enabled and not mirror.screen_mode:
@@ -282,6 +289,10 @@ def main():
             show_landmarks = not show_landmarks
         elif key == ord("c"):
             air_draw.clear()
+        elif key == ord("n"):
+            vscreens.spawn()
+        elif key == ord("x"):
+            vscreens.remove_last()
         elif key == 9:          # TAB
             panel.toggle()
         elif key == ord("+") or key == ord("="):
@@ -298,6 +309,7 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
     tracker.release()
+    face_tracker.release()
     print("Encerrado.")
 
 

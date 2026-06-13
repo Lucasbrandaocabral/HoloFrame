@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 assets/hand_landmarker.task
+assets/face_landmarker.task
 screenshots/
 *.egg-info/
 .DS_Store

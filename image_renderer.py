@@ -30,7 +30,6 @@ class ImageRenderer:
         self.source_frame: np.ndarray | None = None  # mirror mode
         self.zoom_factor:  float             = 1.0
         self.glitch_active: bool             = False
-        self.color_filter                    = None  # ref ao ColorFilter
 
     # ------------------------------------------------------------------ public
 
@@ -88,10 +87,6 @@ class ImageRenderer:
         # Aplica zoom (crop + resize)
         if self.zoom_factor > 1.02 or self.zoom_factor < 0.98:
             src_img = self._zoom(src_img, self.zoom_factor)
-
-        # Aplica filtro de cor
-        if self.color_filter is not None:
-            src_img = self.color_filter.apply(src_img)
 
         ih, iw = src_img.shape[:2]
         src = np.array([[0, 0], [iw, 0], [iw, ih], [0, ih]], dtype=np.float32)

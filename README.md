@@ -29,9 +29,9 @@ Mova as mãos. A moldura segue.
 |---|--------|-----------|
 | `1` | **Trilha de Luz** | Rastro neon cyan/magenta seguindo as pontas dos dedos |
 | `2` | **Glitch** | Distorção de canal RGB quando a moldura se move rápido |
-| `3` | **Captura de Rosto** | Detecta e enquadra o rosto ao vivo dentro da moldura |
+| `3` | **Rosto Elástico** | Mapeia o rosto e, com a pinça dos dedos, estica ele como borracha (Gomu Gomu) |
 | `4` | **Espelho / Tela** | Exibe webcam ou região da tela dentro da moldura |
-| `5` | **Filtro de Cor** | Cicla entre Normal → Neon → P&B → Sépia → Infravermelho |
+| `5` | **Tela Virtual** | Captura uma janela do Windows ao vivo e deixa flutuando no espaço com profundidade — agarre com a pinça e posicione (estilo VR) |
 | `6` | **Clone Fantasma** | Palma aberta 1 s congela o frame — veja dois de você ao mesmo tempo |
 | `7` | **Desenho no Ar** | Indicador esticado desenha neon; paz ✌ troca cor; C limpa |
 
@@ -44,6 +44,8 @@ TAB      Mostrar / ocultar painel de efeitos
 L        Ocultar / mostrar esqueleto das mãos
 G        Toggle grade de fundo
 S        Selecionar região da tela para a moldura
+N        Capturar nova tela virtual flutuante (efeito 5)
+X        Remover a última tela virtual
 +  -  0  Zoom in / out / reset do conteúdo da moldura
 R        Recarregar assets/image.png
 H        Toggle HUD no feed da câmera virtual
@@ -81,7 +83,8 @@ main.py              Orquestração, loop principal, teclado
 hand_tracker.py      Wrapper do MediaPipe Tasks (processa em 640×360)
 gesture_detector.py  Detecção do gesto de moldura + suavização EMA
 image_renderer.py    Warp perspectivo, HUD, partículas
-effects.py           Trilha, Glitch, Screenshot, Mirror, Filtros, Explosão
+face_tracker.py      Wrapper do MediaPipe FaceLandmarker (478 pontos do rosto)
+effects.py           Trilha, Glitch, Rosto Elástico, Espelho, Tela Virtual, Clone, Desenho
 ui_panel.py          Painel lateral holográfico in-app
 assets/image.png     Imagem exibida na moldura (substitua pela sua)
 ```
