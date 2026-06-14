@@ -6,15 +6,21 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from filters import LandmarkSmoother
+
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
     "face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 )
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "assets", "face_landmarker.task")
 
-# Roda na mesma resolução reduzida das mãos — landmarks são normalizados (0-1),
-# então remapeiam corretamente para o frame completo.
-PROC_W, PROC_H = 640, 360
+# Landmarks normalizados (0-1) → mapeiam para o frame completo. Resolução mais
+# alta = malha mais precisa; o rosto roda a cada 2 frames, então cabe no orçamento.
+PROC_W, PROC_H = 960, 540
+
+# Filtro 1€ do rosto — mais suave (o rosto vibra menos e oscila mais devagar).
+FACE_MINCUTOFF = 1.2
+FACE_BETA      = 0.010
 
 
 def _ensure_model():
@@ -29,8 +35,9 @@ class FaceTracker:
     """Mapeia o rosto via MediaPipe Tasks (FaceLandmarker) — mesma API das mãos."""
 
     def __init__(self, max_faces=1):
-        self._ok      = False
-        self._result  = None
+        self._ok       = False
+        self._result   = None
+        self._smoother = LandmarkSmoother(mincutoff=FACE_MINCUTOFF, beta=FACE_BETA)
         try:
             _ensure_model()
             BaseOptions    = mp.tasks.BaseOptions
@@ -64,12 +71,16 @@ class FaceTracker:
             self._result = None
 
     def get_face(self, frame: np.ndarray):
-        """Retorna dict {idx: (x, y)} no frame completo, ou None."""
+        """Retorna dict {idx: (x, y)} suavizado no frame completo, ou None."""
         if not self._ok or not self._result or not self._result.face_landmarks:
+            self._smoother.reset()
             return None
         h, w    = frame.shape[:2]
+        t       = time.monotonic()
         lm_list = self._result.face_landmarks[0]
-        return {i: (int(p.x * w), int(p.y * h)) for i, p in enumerate(lm_list)}
+        raw     = {i: (p.x * w, p.y * h) for i, p in enumerate(lm_list)}
+        smooth  = self._smoother(raw, t)
+        return {i: (int(round(x)), int(round(y))) for i, (x, y) in smooth.items()}
 
     def release(self):
         if self._ok:

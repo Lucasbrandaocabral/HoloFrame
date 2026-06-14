@@ -41,7 +41,7 @@ Mova as mãos. A moldura segue.
 
 ```
 TAB      Mostrar / ocultar painel de efeitos
-L        Ocultar / mostrar esqueleto das mãos
+L        Modo limpo — esconde mapeamento (mão/rosto) e interface (ainda dá pra pegar a tela)
 G        Toggle grade de fundo
 S        Selecionar região da tela para a moldura
 N        Capturar nova tela virtual flutuante (efeito 5)
@@ -80,10 +80,11 @@ Selecione **OBS Virtual Camera** no Discord, Zoom, Teams ou OBS. Requer OBS Stud
 
 ```
 main.py              Orquestração, loop principal, teclado
-hand_tracker.py      Wrapper do MediaPipe Tasks (processa em 640×360)
+hand_tracker.py      Wrapper do MediaPipe Tasks (768×432) + suavização 1€
 gesture_detector.py  Detecção do gesto de moldura + suavização EMA
 image_renderer.py    Warp perspectivo, HUD, partículas
-face_tracker.py      Wrapper do MediaPipe FaceLandmarker (478 pontos do rosto)
+face_tracker.py      Wrapper do MediaPipe FaceLandmarker (478 pontos) + suavização 1€
+filters.py           Filtro 1€ (One Euro) — pouco lag, pouco jitter
 effects.py           Trilha, Glitch, Rosto Elástico, Espelho, Tela Virtual, Clone, Desenho
 ui_panel.py          Painel lateral holográfico in-app
 assets/image.png     Imagem exibida na moldura (substitua pela sua)

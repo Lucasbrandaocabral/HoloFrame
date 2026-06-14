@@ -206,17 +206,19 @@ class FaceWarp:
       • Soltar a pinça = o rosto volta ao normal.
     """
 
-    PINCH_RATIO = 0.55   # |polegar-indicador| / tamanho da mão p/ contar pinça
-    SIGMA_RATIO = 0.45   # σ do campo de deslocamento ∝ tamanho do rosto
-    ROI_FACTOR  = 2.6    # raio da região processada = ROI_FACTOR * σ
-    MAX_PULL    = 0.95   # deslocamento máx ∝ σ (abaixo do limite de dobra ≈1.16σ)
-    PERP_SCALE  = 0.78   # achatamento perpendicular → estica em formato de faixa
+    PINCH_RATIO    = 0.55   # |polegar-indicador| / tamanho da mão p/ contar pinça
+    SIGMA_RATIO    = 0.45   # σ do campo de deslocamento ∝ tamanho do rosto
+    ROI_FACTOR     = 2.6    # raio da região processada = ROI_FACTOR * σ
+    MAX_PULL       = 0.95   # deslocamento máx ∝ σ (abaixo do limite de dobra ≈1.16σ)
+    PERP_SCALE     = 0.78   # achatamento perpendicular → estica em formato de faixa
+    RELEASE_FRAMES = 3      # frames sem pinça antes de soltar (anti-flicker)
 
     def __init__(self):
         self.enabled = False
         self._lms    = None     # dict idx->(x,y) do rosto no frame atual
         self._box    = None     # (cx, cy, w, h)
-        self._grab   = None     # {anchor, handle, radius} enquanto agarrado
+        self._grab   = None     # {anchor, handle, sigma} enquanto agarrado
+        self._miss   = 0        # frames consecutivos sem pinça
         try:
             import mediapipe as mp
             self._contours = mp.solutions.face_mesh.FACEMESH_CONTOURS
@@ -261,9 +263,14 @@ class FaceWarp:
                 handle = mid
                 break
 
-        if handle is None:          # soltou a pinça → rosto volta
+        if handle is None:          # sem pinça neste frame
+            if self._grab is not None:
+                self._miss += 1
+                if self._miss < self.RELEASE_FRAMES:
+                    return          # segura o grab por alguns frames (anti-flicker)
             self._grab = None
             return
+        self._miss = 0
 
         if self._grab is None:
             # precisa do rosto mapeado para COMEÇAR a agarrar (e sobre o rosto)
@@ -340,9 +347,9 @@ class FaceWarp:
 
     # ------------------------------------------------------------------ overlay
 
-    def draw(self, frame: np.ndarray):
-        if not self.enabled:
-            return
+    def draw(self, frame: np.ndarray, show_ui: bool = True):
+        if not self.enabled or not show_ui:
+            return        # modo limpo: o warp continua, sem malha/indicadores
         if self._grab is not None and "handle" in self._grab:
             self._draw_pull_fx(frame)
         elif self._lms is not None:
@@ -350,10 +357,13 @@ class FaceWarp:
         self._draw_status(frame)
 
     def _draw_mesh(self, frame: np.ndarray):
-        """Malha holográfica sobre o rosto — pontos + contornos."""
-        lm = self._lms
-        for (px, py) in lm.values():
-            cv2.circle(frame, (px, py), 1, (0, 170, 130), -1, cv2.LINE_AA)
+        """Malha holográfica sobre o rosto — pontos (vetorizado) + contornos."""
+        lm   = self._lms
+        h, w = frame.shape[:2]
+        pts  = np.array(list(lm.values()), dtype=np.int32)
+        xs   = np.clip(pts[:, 0], 0, w - 1)
+        ys   = np.clip(pts[:, 1], 0, h - 1)
+        frame[ys, xs] = (0, 200, 150)          # 478 pontos em 1 op (sem 478 cv2.circle)
         if self._contours:
             for a, b in self._contours:
                 if a in lm and b in lm:
@@ -531,17 +541,21 @@ class VirtualScreens:
       • X             remove o último painel
     """
 
-    BASE_H   = 230   # altura base (px) do painel ao criar
-    MIN_HH   = 55    # meia-altura mínima (px)
-    MAX_HH   = 380   # meia-altura máxima (px)
-    BALL_GAP = 38    # distância da bola de mover abaixo da borda inferior
-    GRAB_R   = 44    # raio de captura das alças (px)
+    BASE_H         = 230   # altura base (px) do painel ao criar
+    MIN_HH         = 55    # meia-altura mínima (px)
+    MAX_HH         = 380   # meia-altura máxima (px)
+    BALL_GAP       = 38    # distância da bola de mover abaixo da borda inferior
+    GRAB_R           = 44     # raio de captura das alças (px)
+    RELEASE_FRAMES   = 3      # frames sem pinça antes de soltar (anti-flicker)
+    CAPTURE_INTERVAL = 0.045  # s entre capturas da tela (~22 Hz) → segura o FPS
 
     def __init__(self):
-        self.enabled = False
-        self.panels  = []      # [{region, cx, cy, hw, hh}]
-        self._sct    = None
-        self._grab   = None    # {idx, mode, ...}
+        self.enabled  = False
+        self.panels   = []     # [{region, cx, cy, hh, aspect}]
+        self._sct     = None
+        self._grab    = None   # {idx, mode, ...}
+        self._release = 0      # frames consecutivos sem pinça
+        self._fw, self._fh = 1280, 720   # tamanho do frame (atualizado em update)
 
     @property
     def name(self) -> str:
@@ -565,10 +579,8 @@ class VirtualScreens:
                 print("AVISO: mss não instalado — execute: uv add mss")
                 return
         _, _, w, h = region
-        hh = self.BASE_H / 2.0
-        hw = hh * (w / max(h, 1))
         self.panels.append({"region": region, "cx": None, "cy": None,
-                            "hw": hw, "hh": hh})
+                            "hh": self.BASE_H / 2.0, "aspect": w / max(h, 1)})
         print(f"Tela virtual criada — {len(self.panels)} no total")
 
     def remove_last(self):
@@ -579,19 +591,26 @@ class VirtualScreens:
     # ------------------------------------------------------------------ geometria
 
     def _half_size(self, p):
-        return p["hw"], p["hh"]
+        hh = p["hh"]
+        return hh * p["aspect"], hh      # largura segue a altura → mantém proporção
+
+    def _clamp_hh(self, hh, aspect):
+        """Limita a meia-altura (e, via aspecto, a largura) a ~46% do frame."""
+        hi = min(self.MAX_HH, self._fh * 0.46, self._fw * 0.46 / max(aspect, 1e-3))
+        return float(np.clip(hh, self.MIN_HH, max(hi, self.MIN_HH)))
 
     def _hit(self, pt, c):
         return (pt[0] - c[0]) ** 2 + (pt[1] - c[1]) ** 2 <= self.GRAB_R ** 2
 
     def _handles(self, p, w_fr, h_fr):
-        """Pontos (topo, base, bola) das alças no espaço da tela."""
-        quad = self._quad(p, w_fr)
-        top  = (quad[0] + quad[1]) / 2.0
-        bot  = (quad[2] + quad[3]) / 2.0
-        ball = bot + np.array([0.0, self.BALL_GAP], dtype=np.float32)
+        """Pontos (esquerda, direita, base, bola) das alças no espaço da tela."""
+        quad  = self._quad(p, w_fr)
+        left  = (quad[0] + quad[3]) / 2.0        # TL, BL
+        right = (quad[1] + quad[2]) / 2.0        # TR, BR
+        bot   = (quad[2] + quad[3]) / 2.0        # BR, BL
+        ball  = bot + np.array([0.0, self.BALL_GAP], dtype=np.float32)
         ball[1] = min(ball[1], h_fr - 16)        # mantém a bola dentro da tela
-        return top, bot, ball
+        return left, right, bot, ball
 
     def _bring_front(self, idx):
         self.panels.append(self.panels.pop(idx))
@@ -605,6 +624,7 @@ class VirtualScreens:
             return
 
         h_fr, w_fr = frame_shape[:2]
+        self._fw, self._fh = w_fr, h_fr
         for i, p in enumerate(self.panels):
             if p["cx"] is None:
                 p["cx"] = w_fr // 2 + (i - len(self.panels) // 2) * 80
@@ -612,8 +632,15 @@ class VirtualScreens:
 
         pts = [mid for ok, mid in (detect_pinch(hd) for hd in hands) if ok]
         if not pts:
+            if self._grab is not None:
+                self._release += 1
+                if self._release < self.RELEASE_FRAMES:
+                    return          # segura o grab por alguns frames (anti-flicker)
             self._grab = None
-        elif self._grab is not None:
+            return
+        self._release = 0
+
+        if self._grab is not None:
             self._apply_grab(pts[0])
         else:
             self._try_grab(pts[0], w_fr, h_fr)
@@ -624,21 +651,23 @@ class VirtualScreens:
             p = self.panels[i]
             if p["cx"] is None:
                 continue
-            top, bot, ball = self._handles(p, w_fr, h_fr)
+            left, right, _bot, ball = self._handles(p, w_fr, h_fr)
             if self._hit(pt, ball):
                 p = self.panels[self._bring_front(i)]
                 self._grab = {"idx": len(self.panels) - 1, "mode": "move",
                               "off": (p["cx"] - pt[0], p["cy"] - pt[1])}
                 return
-            if self._hit(pt, bot):
-                p = self.panels[self._bring_front(i)]
-                self._grab = {"idx": len(self.panels) - 1, "mode": "bottom",
-                              "fixed": p["cy"] - p["hh"]}     # borda de cima fixa
+            if self._hit(pt, right):
+                p  = self.panels[self._bring_front(i)]
+                hw = p["hh"] * p["aspect"]
+                self._grab = {"idx": len(self.panels) - 1, "mode": "right",
+                              "fixed": p["cx"] - hw}          # borda esquerda fixa
                 return
-            if self._hit(pt, top):
-                p = self.panels[self._bring_front(i)]
-                self._grab = {"idx": len(self.panels) - 1, "mode": "top",
-                              "fixed": p["cy"] + p["hh"]}     # borda de baixo fixa
+            if self._hit(pt, left):
+                p  = self.panels[self._bring_front(i)]
+                hw = p["hh"] * p["aspect"]
+                self._grab = {"idx": len(self.panels) - 1, "mode": "left",
+                              "fixed": p["cx"] + hw}          # borda direita fixa
                 return
         self._grab = None
 
@@ -653,31 +682,46 @@ class VirtualScreens:
             ox, oy = g["off"]
             p["cx"] = int(pt[0] + ox)
             p["cy"] = int(pt[1] + oy)
-        elif mode == "bottom":
-            ty = g["fixed"]
-            hh = float(np.clip((pt[1] - ty) / 2.0, self.MIN_HH, self.MAX_HH))
-            p["hh"], p["cy"] = hh, int(ty + hh)
-        elif mode == "top":
-            by = g["fixed"]
-            hh = float(np.clip((by - pt[1]) / 2.0, self.MIN_HH, self.MAX_HH))
-            p["hh"], p["cy"] = hh, int(by - hh)
+        elif mode == "right":
+            lx = g["fixed"]                              # borda esquerda fixa
+            hw = max((pt[0] - lx) / 2.0, 1.0)
+            hh = self._clamp_hh(hw / p["aspect"], p["aspect"])
+            p["hh"], p["cx"] = hh, int(lx + hh * p["aspect"])
+        elif mode == "left":
+            rx = g["fixed"]                              # borda direita fixa
+            hw = max((rx - pt[0]) / 2.0, 1.0)
+            hh = self._clamp_hh(hw / p["aspect"], p["aspect"])
+            p["hh"], p["cx"] = hh, int(rx - hh * p["aspect"])
 
     # ------------------------------------------------------------------ render
 
-    def draw(self, frame):
+    def draw(self, frame, show_ui: bool = True):
         if not self.enabled:
             return
         h_fr, w_fr = frame.shape[:2]
         for i, p in enumerate(self.panels):
             if p["cx"] is None:
                 continue
-            img = self._grab_region(p["region"])
+            img = self._capture(p)               # captura da tela (com throttle)
             if img is not None:
                 self._render_panel(frame, p, img)
-            active = (self._grab["mode"]
-                      if self._grab and self._grab["idx"] == i else None)
-            self._draw_handles(frame, p, w_fr, h_fr, active)
-        self._draw_status(frame)
+            if show_ui:
+                active = (self._grab["mode"]
+                          if self._grab and self._grab["idx"] == i else None)
+                self._draw_handles(frame, p, w_fr, h_fr, active)
+        if show_ui:
+            self._draw_status(frame)
+
+    def _capture(self, p):
+        """Captura a região da tela com throttle — reusa o último frame entre
+        capturas para segurar o FPS (a tela não precisa atualizar a 30/60 Hz)."""
+        now = time.time()
+        if p.get("_img") is not None and now - p.get("_t", 0.0) < self.CAPTURE_INTERVAL:
+            return p["_img"]
+        img = self._grab_region(p["region"])
+        if img is not None:
+            p["_img"], p["_t"] = img, now
+        return p.get("_img")
 
     def _grab_region(self, region):
         if self._sct is None:
@@ -689,21 +733,13 @@ class VirtualScreens:
         except Exception:
             return None
 
-    def _quad(self, p, w_fr):
-        """Quad trapezoidal: lado distante encolhe → leitura de orientação no espaço."""
+    def _quad(self, p, w_fr=None):
+        """Retângulo reto do painel (sem perspectiva) — a profundidade vem do
+        tamanho + sombra + escurecimento, mantendo a tela sempre alinhada."""
         cx, cy = p["cx"], p["cy"]
         hw, hh = self._half_size(p)
-        yaw  = float(np.clip((cx - w_fr / 2.0) / (w_fr / 2.0), -1.0, 1.0))
-        fore = 1.0 - 0.16 * abs(yaw)     # encurta horizontalmente o lado de trás
-        far  = 1.0 - 0.26 * abs(yaw)     # diminui a altura do lado de trás
-        if yaw >= 0:                     # painel à direita → lado direito ao fundo
-            xl, hl = cx - hw,        hh
-            xr, hr = cx + hw * fore, hh * far
-        else:                            # painel à esquerda → lado esquerdo ao fundo
-            xl, hl = cx - hw * fore, hh * far
-            xr, hr = cx + hw,        hh
-        return np.array([[xl, cy - hl], [xr, cy - hr],
-                         [xr, cy + hr], [xl, cy + hl]], dtype=np.float32)
+        return np.array([[cx - hw, cy - hh], [cx + hw, cy - hh],
+                         [cx + hw, cy + hh], [cx - hw, cy + hh]], dtype=np.float32)
 
     def _render_panel(self, frame, p, img):
         h_fr, w_fr = frame.shape[:2]
@@ -731,7 +767,8 @@ class VirtualScreens:
         src = np.array([[0, 0], [iw, 0], [iw, ih], [0, ih]], dtype=np.float32)
         M       = cv2.getPerspectiveTransform(src, local)
         warped  = cv2.warpPerspective(img, M, (sw, sh), flags=cv2.INTER_LINEAR)
-        mask    = cv2.warpPerspective(np.full((ih, iw), 255, np.uint8), M, (sw, sh))
+        mask    = np.zeros((sh, sw), np.uint8)          # mais barato que 2º warp
+        cv2.fillConvexPoly(mask, local.astype(np.int32), 255)
 
         # profundidade: painel menor (mais longe) = mais escuro
         ratio = (p["hh"] - self.MIN_HH) / max(self.MAX_HH - self.MIN_HH, 1)
@@ -748,9 +785,9 @@ class VirtualScreens:
     # ------------------------------------------------------------------ alças
 
     def _draw_handles(self, frame, p, w_fr, h_fr, active):
-        top, bot, ball = self._handles(p, w_fr, h_fr)
-        self._grip(frame, top, up=True,  active=(active == "top"))
-        self._grip(frame, bot, up=False, active=(active == "bottom"))
+        left, right, bot, ball = self._handles(p, w_fr, h_fr)
+        self._grip(frame, left,  "left",  active=(active == "left"))
+        self._grip(frame, right, "right", active=(active == "right"))
 
         bx, by = int(ball[0]), int(ball[1])
         # haste ligando o painel à bola de mover
@@ -766,24 +803,25 @@ class VirtualScreens:
         cv2.line(frame, (bx - a, by), (bx + a, by), (15, 28, 38), 2, cv2.LINE_AA)
         cv2.line(frame, (bx, by - a), (bx, by + a), (15, 28, 38), 2, cv2.LINE_AA)
 
-    def _grip(self, frame, c, up, active):
+    def _grip(self, frame, c, side, active):
         cx, cy = int(c[0]), int(c[1])
-        w2, h2 = 30, 7
+        w2, h2 = 7, 30          # barra vertical na lateral
         col    = (0, 255, 255) if active else (0, 205, 235)
         cv2.rectangle(frame, (cx - w2, cy - h2), (cx + w2, cy + h2), (12, 26, 36), -1)
         cv2.rectangle(frame, (cx - w2, cy - h2), (cx + w2, cy + h2), col, 1, cv2.LINE_AA)
-        # chevron indicando a direção de esticar
-        tip    = (cx, cy - h2 - 7) if up else (cx, cy + h2 + 7)
-        base_y = cy - h2 if up else cy + h2
-        cv2.line(frame, (cx - 8, base_y), tip, col, 2, cv2.LINE_AA)
-        cv2.line(frame, (cx + 8, base_y), tip, col, 2, cv2.LINE_AA)
+        # chevron apontando para fora (direção de aumentar)
+        out    = -1 if side == "left" else 1
+        tip    = (cx + out * (w2 + 7), cy)
+        base_x = cx + out * w2
+        cv2.line(frame, (base_x, cy - 8), tip, col, 2, cv2.LINE_AA)
+        cv2.line(frame, (base_x, cy + 8), tip, col, 2, cv2.LINE_AA)
 
     def _draw_status(self, frame):
         h = frame.shape[0]
         if not self.panels:
             col, label = (0, 150, 210), "N: capturar tela virtual"
         else:
-            col, label = (0, 230, 255), "bola: mover  |  topo/base: esticar  |  X: remover"
+            col, label = (0, 230, 255), "bola: mover  |  laterais: tamanho  |  X: remover"
         cv2.circle(frame, (18, h - 64), 5, col, -1)
         cv2.putText(frame, label, (30, h - 59),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)

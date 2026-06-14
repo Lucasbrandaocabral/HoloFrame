@@ -6,6 +6,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from filters import LandmarkSmoother
+
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
     "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
@@ -21,9 +23,14 @@ HAND_CONNECTIONS = [
     (5, 9), (9, 13), (13, 17), (5, 17),
 ]
 
-# MediaPipe roda nessa resolução — landmarks são normalizados (0-1)
-# então as coordenadas ainda mapeiam corretamente para o frame completo.
-PROC_W, PROC_H = 640, 360
+# MediaPipe roda nessa resolução — landmarks são normalizados (0-1), então
+# mapeiam corretamente para o frame completo. Resolução maior = mais precisão
+# (em modo VIDEO o detector roda raramente, então o custo extra é pequeno).
+PROC_W, PROC_H = 768, 432
+
+# Filtro 1€ das mãos — responsivo (mincutoff alto), pouco jitter parado.
+HAND_MINCUTOFF = 1.7
+HAND_BETA      = 0.025
 
 
 def _ensure_model():
@@ -38,7 +45,7 @@ class HandTracker:
     THUMB_TIP = 4
     INDEX_TIP = 8
 
-    def __init__(self, max_hands=2, detection_conf=0.7, tracking_conf=0.7):
+    def __init__(self, max_hands=2, detection_conf=0.6, tracking_conf=0.5):
         _ensure_model()
 
         BaseOptions        = mp.tasks.BaseOptions
@@ -60,6 +67,7 @@ class HandTracker:
         # Buffer reutilizável para evitar malloc a cada frame
         self._small = np.empty((PROC_H, PROC_W, 3), dtype=np.uint8)
         self._ov = None  # overlay pré-alocado
+        self._smoothers: dict[str, LandmarkSmoother] = {}   # 1€ por mão (handedness)
 
     def process(self, frame):
         cv2.resize(frame, (PROC_W, PROC_H), dst=self._small)
@@ -69,18 +77,35 @@ class HandTracker:
         self._result = self._lm.detect_for_video(mp_img, ts_ms)
 
     def get_hands(self, frame):
-        h, w = frame.shape[:2]
+        h, w  = frame.shape[:2]
         hands = []
         if not self._result or not self._result.hand_landmarks:
+            for sm in self._smoothers.values():
+                sm.reset()
             return hands
+
+        t    = time.monotonic()
+        seen = set()
         for i, lm_list in enumerate(self._result.hand_landmarks):
             label = self._result.handedness[i][0].category_name
-            # Landmarks normalizados → coordenadas do frame COMPLETO
-            landmarks = {
-                idx: (int(lm.x * w), int(lm.y * h))
-                for idx, lm in enumerate(lm_list)
-            }
+            seen.add(label)
+            # Landmarks normalizados → coordenadas (float) do frame COMPLETO
+            raw = {idx: (lm.x * w, lm.y * h) for idx, lm in enumerate(lm_list)}
+
+            sm = self._smoothers.get(label)
+            if sm is None:
+                sm = LandmarkSmoother(mincutoff=HAND_MINCUTOFF, beta=HAND_BETA)
+                self._smoothers[label] = sm
+            smooth = sm(raw, t)
+
+            landmarks = {idx: (int(round(x)), int(round(y)))
+                         for idx, (x, y) in smooth.items()}
             hands.append({"label": label, "landmarks": landmarks})
+
+        # zera filtros de mãos que sumiram → reaquisição limpa
+        for label, sm in self._smoothers.items():
+            if label not in seen:
+                sm.reset()
         return hands
 
     def draw_landmarks(self, frame, hands):

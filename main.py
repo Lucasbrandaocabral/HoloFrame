@@ -51,7 +51,8 @@ from ui_panel import EffectsPanel
 
 ASSETS_DIR    = os.path.join(os.path.dirname(__file__), "assets")
 DEFAULT_IMAGE = os.path.join(ASSETS_DIR, "image.png")
-MEDIAPIPE_EVERY_N = 2
+HAND_EVERY_N = 1   # mãos: todo frame (resposta imediata)
+FACE_EVERY_N = 2   # rosto: a cada N frames (mais pesado)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -158,7 +159,7 @@ def main():
     # ── Estado global ─────────────────────────────────────────────────────
     grid_cache      = _build_grid_cache(cam_h, cam_w)
     show_grid       = True
-    show_landmarks  = True
+    clean_ui        = False   # L: modo limpo (esconde mapeamento + interface)
     zoom_level      = 1.0
     prev_frame: np.ndarray | None = None
 
@@ -178,15 +179,17 @@ def main():
         frame = cv2.flip(frame, 1)
         raw   = frame.copy()   # frame limpo para detecção de rosto
 
-        # ── MediaPipe (a cada N frames) ───────────────────────────────────
-        if frame_idx % MEDIAPIPE_EVERY_N == 0:
+        # ── Mãos: todo frame (resposta imediata) ──────────────────────────
+        if frame_idx % HAND_EVERY_N == 0:
             tracker.process(frame)
             hands   = tracker.get_hands(frame)
             corners = detector.detect(hands)
             renderer.set_active(corners is not None)
-            if face_warp.enabled:
-                face_tracker.process(raw)
-                face_warp.set_face(face_tracker.get_face(raw))
+
+        # ── Rosto: a cada FACE_EVERY_N frames (mais pesado) ───────────────
+        if face_warp.enabled and frame_idx % FACE_EVERY_N == 0:
+            face_tracker.process(raw)
+            face_warp.set_face(face_tracker.get_face(raw))
 
         frame_idx += 1
 
@@ -211,8 +214,8 @@ def main():
         renderer.zoom_factor   = zoom_level
         renderer.glitch_active = glitch.is_active
 
-        # ── Landmarks ─────────────────────────────────────────────────────
-        if show_landmarks:
+        # ── Landmarks (mão) ───────────────────────────────────────────────
+        if not clean_ui:
             tracker.draw_landmarks(frame, hands)
 
         # ── Renderiza imagem holográfica ──────────────────────────────────
@@ -227,12 +230,12 @@ def main():
         air_draw.update(hands, frame.shape)
         air_draw.draw(frame)
 
-        # ── Telas virtuais flutuantes ─────────────────────────────────────
+        # ── Telas virtuais flutuantes (pega mesmo no modo limpo) ──────────
         vscreens.update(hands, frame.shape)
-        vscreens.draw(frame)
+        vscreens.draw(frame, show_ui=not clean_ui)
 
         # ── Rosto elástico — malha / leque de tensão ──────────────────────
-        face_warp.draw(frame)
+        face_warp.draw(frame, show_ui=not clean_ui)
 
         # ── Salva frame para webcam mirror do próximo ciclo ──────────────
         if mirror.enabled and not mirror.screen_mode:
@@ -249,8 +252,9 @@ def main():
         fps_times = [t for t in fps_times if now - t < 1.0]
         fps = float(len(fps_times))
 
-        _draw_top_hud(frame, fps, len(hands), detector.active)
-        panel.draw(frame)
+        if not clean_ui:
+            _draw_top_hud(frame, fps, len(hands), detector.active)
+            panel.draw(frame)
 
         # Indicador de câmera virtual na tela
         if vcam is not None:
@@ -286,7 +290,8 @@ def main():
         elif key == ord("s"):
             mirror.select_region()
         elif key == ord("l"):
-            show_landmarks = not show_landmarks
+            clean_ui = not clean_ui
+            print("Modo limpo:", "ON" if clean_ui else "OFF")
         elif key == ord("c"):
             air_draw.clear()
         elif key == ord("n"):
